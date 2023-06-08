@@ -1,4 +1,4 @@
-# [◀](../README) Creating Pack
+# [◀](../index.html) Creating Pack
 First, you will need to create a folder in your packs folder that was generated when you ran your app for the first time. See [Getting Started](./getting_started) for more. This folder will contain all files for your pack. The name of the folder doesn't matter however it's useful to make it match the name of your pack.
 
 ## Manifest

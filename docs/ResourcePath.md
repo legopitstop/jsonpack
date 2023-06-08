@@ -1,4 +1,4 @@
-# [◀](./README) [ResourcePath](/jsonpack/util.py)
+# [◀](./index.html) [ResourcePath](/jsonpack/util.py)
 
 Describes a resrouce path used for annotations.
 

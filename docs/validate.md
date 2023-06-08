@@ -1,4 +1,4 @@
-# [◀](./README) [validate](/jsonpack/__init__.py)
+# [◀](./index.html) [validate](/jsonpack/__init__.py)
 
 Tests if instances passes the schema.
 

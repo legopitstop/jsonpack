@@ -1,4 +1,4 @@
-# [◀](./README) [mimetype](/jsonpack/__init__.py)
+# [◀](./index.html) [mimetype](/jsonpack/__init__.py)
 
 Adds a mimetype to the app.
 

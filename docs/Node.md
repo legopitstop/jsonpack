@@ -1,4 +1,4 @@
-# [◀](./README) [Node](/jsonpack/node.py)
+# [◀](./index.html) [Node](/jsonpack/node.py)
 
 Helper class used for creating nodes.
 

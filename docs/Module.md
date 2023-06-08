@@ -1,4 +1,4 @@
-# [◀](./README) [Module](/jsonpack/__init__.py)
+# [◀](./index.html) [Module](/jsonpack/__init__.py)
 
 Defines a modules nodes when defined in the packs manifest.json.
 

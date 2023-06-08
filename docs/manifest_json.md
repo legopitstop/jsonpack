@@ -1,4 +1,4 @@
-# [◀](./README) [Manifest.json](/jsonpack/__init__.py)
+# [◀](./index.html) [Manifest.json](/jsonpack/__init__.py)
 
 ## Example
 ```json

@@ -1,4 +1,4 @@
-# [◀](./README) [Cache](/jsonpack/util.py)
+# [◀](./index.html) [Cache](/jsonpack/util.py)
 
 Used to store values.
 

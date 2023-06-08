@@ -1,4 +1,4 @@
-# [◀](./README) [schema](/jsonpack/__init__.py)
+# [◀](./index.html) [schema](/jsonpack/__init__.py)
 
 Creates a jsonschema from a class or function.
 

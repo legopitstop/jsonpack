@@ -1,4 +1,4 @@
-# [◀](./README) [Manifest](/jsonpack/__init__.py)
+# [◀](./index.html) [Manifest](/jsonpack/__init__.py)
 
 A class used to describe a manifest.json file.
 
