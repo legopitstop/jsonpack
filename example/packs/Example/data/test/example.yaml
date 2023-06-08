@@ -1,0 +1,14 @@
+components:
+  default:display_name:
+    text: 'Test'
+  
+  default:icon:
+    texture: 'item/debug'
+
+  default:on_click:
+    event: 'test'
+
+events:
+  test:
+    print:
+      text: 'hello world!'

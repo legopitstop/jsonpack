@@ -1,0 +1,20 @@
+{
+    "components": {
+        "default:display_name": {
+            "text": "Test"
+        },
+        "default:icon": {
+            "texture": "item/debug2"
+        },
+        "default:on_click": {
+            "event": "test"
+        }
+    },
+    "events": {
+        "test": {
+            "print": {
+                "text": "Test"
+            }
+        }
+    }
+}

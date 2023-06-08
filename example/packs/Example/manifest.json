@@ -1,0 +1,24 @@
+{
+    "name": "Example",
+    "description": "An example pack",
+    "uuid": "507fde48-f272-4571-8d5d-fd8b6e0b3bec",
+    "version": [1,0,0],
+    "modules": [
+        {
+            "version": [1,0,0],
+            "type": "resources",
+            "uuid": "ea6635e7-d2d5-428b-aecd-a8f820f80449"
+        },
+        {
+            "version": [1,0,0],
+            "type": "data",
+            "uuid": "973472cf-ee4c-47a3-8dae-286ef5e61fac"
+        },
+        {
+            "version": [1,0,0],
+            "type": "script",
+            "uuid": "07a075d4-73a7-4cac-8913-a014d5ddf42a",
+            "path": "./scripts/main.py"
+        }
+    ]
+}
