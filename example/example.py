@@ -36,7 +36,7 @@ class App(CTk):
     def load(self):
         row = 0
         column = 0
-        for name, item in self.reg.items['data']['item'].items():
+        for name, item in self.reg['data.item'].items():
             icon = item.trigger_component('default:icon')
             if icon is not None:
                 lbl = Label(self.lst, image=icon, compound='left', bg=self.lst['bg'])
