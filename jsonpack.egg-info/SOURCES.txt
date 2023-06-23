@@ -9,4 +9,5 @@ jsonpack/util.py
 jsonpack.egg-info/PKG-INFO
 jsonpack.egg-info/SOURCES.txt
 jsonpack.egg-info/dependency_links.txt
+jsonpack.egg-info/requires.txt
 jsonpack.egg-info/top_level.txt

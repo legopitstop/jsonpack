@@ -1,6 +1,11 @@
 # jsonpack
 This library allows you to create packs using JSON files to configure your Python Application.
 
+## Install
+```
+pip install jsonpack
+```
+
 ## Features
 - Supports JSON, YAML, ZIP and most image formats
 - Includes the loading of Python files from packs to easily expand your app's features
@@ -14,3 +19,5 @@ See the docs for more information.
 |--|--|--|
 |[Pillow](https://pypi.org/project/Pillow/) | No | For image/* mimetypes |
 |[PyYAML](https://pypi.org/project/PyYAML/) | No | For application/yaml mimetype |
+|[opencv-python](https://pypi.org/project/opencv-python/) | No | For video/* mimetype |
+|[pygame](https://pypi.org/project/pygame/) | No | For audio/* mimetype |

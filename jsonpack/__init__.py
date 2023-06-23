@@ -7,21 +7,31 @@ import threading
 import glob
 import re
 import jsonschema
-import inspect
 import time
+import schemaser
+import builtins
+import uuid
+import zipfile
+import inspect
+import asyncio
 
 from .exceptions import AppError
 from .node import Node, NodeProxy, Componentable, Eventable
-from .util import Cache, ResourcePath, Context
+from .util import sortPacks, Cache, ResourcePath, Context
 
-__version__ = '1.0.0'
+__version__ = '0.0.2'
 __root_app__ = None
 
 logger = logging.getLogger('Pack')
 
+def exit(code:int=None) -> None:
+    if code is None: logger.error(f'Stopping!')
+    else: logger.error(f'Proccess crashed with exit code: {code}')
+    builtins.exit(code)
+
 def getApp():
     """Returns the root App"""
-    if __root_app__ is None: raise AppError('App has not started yet! Use App.run() to start your app.')
+    if __root_app__ is None: raise AppError('App has not started yet! Use .run() to start your app.')
     return __root_app__
 
 class ManifestProxy:
@@ -50,9 +60,10 @@ class Manifest:
         '_version',
         '_dependencies',
         '_path',
-        '_scripts',
+        '_permission_level',
         '_icon',
-        '__file__'
+        '__file__',
+        '__path__'
     )
 
     def __init__(self, name:str, description:str, uuid:str):
@@ -86,14 +97,14 @@ class Manifest:
         self.uuid = str(uuid)
 
     @property
-    def scripts(self):
-        return getattr(self, '_scripts', False)
+    def permission_level(self):
+        return getattr(self, '_permission_level', False)
     
-    @scripts.setter
-    def scripts(self, value:bool):
-        self.enable_scripts(value)
+    @permission_level.setter
+    def permission_level(self, value:bool):
+        self.permission_level(value)
 
-    def enable_scripts(self, value:bool):
+    def set_permission_level(self, value:int):
         """
         Whether or not this pack can load scripts.
 
@@ -101,11 +112,11 @@ class Manifest:
         ---
         `value` - True if it can load scripts. False if it cannot load scripts (default)
         """
-        if value is None: self._scripts = False
-        elif isinstance(value, bool):
-            self._scripts = value
+        if value is None: self._permission_level = 0
+        elif isinstance(value, int):
+            self._permission_level = value
         else:
-            raise TypeError(f'Expected bool or None but got {value.__class__.__name__} instead.')
+            raise TypeError(f'Expected int or None but got {value.__class__.__name__} instead.')
 
     @property
     def version(self):
@@ -493,38 +504,47 @@ class Script:
         """
         Runs the Python scripts on_enable method if defined.
         """
-        try: self.module.on_enable(self.app)
-        except (TypeError): pass
+        ctx = Context(None, None)
+        ctx.logger = logging.getLogger(self.name)
+        try: self.module.on_enable(ctx)
+        except (AttributeError): pass
         return self
     
     def on_disable(self):
         """
         Runs the Python scripts on_disable method if defined.
         """
-        try: self.module.on_disable(self.app)
-        except (TypeError): pass
+        ctx = Context(None, None)
+        ctx.logger = logging.getLogger(self.name)
+        try: self.module.on_disable(ctx)
+        except (AttributeError): pass
         return self
 
 class _node:
-    def __init__(self, module, pathname, cls, mimetype:str=None, resourcepath_command=None):
+    def __init__(self, module, rule:str, cls, mimetype:str=None, resourcepath_command=None, description:str=None):
         """Internal class"""
         self.app = getApp()
         self.module = module
         self.src = '' # Python file that created this node
-        self.path = pathname
+        self.path = rule
         self.path_args = {}
         self.cls = cls
         self.traits = self.cls.traits # Traits are used for the JSON schema
         self._mimetype = mimetype
         self.resourcepath_command = resourcepath_command
         self.name = str(cls.__name__).lower()
+        self.on_error = None
         if mimetype is None: self._mimetype = 'application/json'
 
         if resourcepath_command is None: self.resourcepath_command = self.resourcepath
 
+        self.description = description
+        if description is None: self.description = '...'
+
     @property
     def ref(self):
-        return ResourcePath(self.module.module_type, self.name)
+        # ResourcePath(self.module.module_type, self.name)
+        return str
 
     @property
     def path(self):
@@ -536,23 +556,30 @@ class _node:
 
     @property
     def mimetype(self):
-        for m in self.app.mimetypes:
+        """Returns the _mimetype that this node should use."""
+        for other in self.app.mimetypes:
             mime = self._mimetype.split('/')
-            if len(mime) == 2:
-                if m.type == mime[0]:
-                    if m.subtype is None: return m.func
-                    elif m.subtype == mime[1]: return m.func
-            elif len(mime) == 1:
-                if m.type == mime[0]:
-                    return m.func
+            # if len(mime) == 2:
+            #     if m.type == mime[0]:
+            #         if m.subtype is None: return m.func
+            #         elif m.subtype == mime[1]: return m.func
+            # elif len(mime) == 1:
+            #     if m.type == mime[0]:
+            #         return m.func
+            
+            m = None
+            if len(mime) == 2: m = _mimetype(mime[0], mime[1])
+            elif len(mime) == 1: m = _mimetype(mime[0])
+            if m == other: return other
                 
         logger.warning(f"mimetype '{self._mimetype}' is not defined!")
         return None
 
-    @property
-    def schema(self):
-        """Returns the JSON schema for this node."""
-        return schema(self, self.cls, self.traits)
+    def to_schema(self):
+        try: return to_schema(self.cls, self, self.traits)
+        except Exception as err:
+            logger.exception(str(err)+f" when loading {self.cls}")
+            exit(1)
 
     def resourcepath(self, node:Node, path:str, manifest:Manifest, **kw):
         """Returns the namespace id of this item"""
@@ -560,7 +587,7 @@ class _node:
         return os.path.relpath(path, manifest.join(res)).replace('\\','/').replace(os.path.splitext(path)[1], '')
         
     # REGISTER COMPONENTS
-    def add_component(self, func, name:str=None):
+    def add_component(self, func, name:str=None, description:str=None):
         """
         Adds a component to the node.
 
@@ -569,14 +596,16 @@ class _node:
         `func` - The function to run when this component is defined.
 
         `name` - Name of the component to add.
+
+        `description` - Description of the component to add.
         """
-        com = _component(Context(self, self.module), func, name)
+        com = _component(Context(self, self.module), func, name, description)
         try:
             self.__components__[com.name] = com
         except AttributeError:
             self.__components__ = {com.name: com}
 
-        return self
+        return com
 
     def remove_component(self, name:str):
         """
@@ -603,20 +632,34 @@ class _node:
             self.__components__ = {}
         return self
 
-    def component(self, name:str=None):
+    def component(self, name:str=None, description:str=None):
         """
         Register a new component for this node.
 
         Arguments
         ---
         `name` - Name of the node to register.
+
+        `description` - Description of the node to register.
         """
-        def wrapper(func):
-            return self.add_component(func, name)
-        return wrapper
+        def decorator(func):
+            if not inspect.iscoroutinefunction(func):
+                raise TypeError('command function must be a coroutine function')
+            return self.add_component(func, name, description)
+        return decorator
+
+    def error(self):
+        """
+        Function to run when an error occors.
+        """
+        def decorator(func):
+            if not inspect.iscoroutinefunction(func):
+                raise TypeError('command function must be a coroutine function')
+            self.on_error = func
+        return decorator
 
 class _event:
-    def __init__(self, ctx:Context, func, name:str=None):
+    def __init__(self, ctx:Context, func, name:str=None, description:str=None):
         """Internal class"""
         self.ctx = ctx
         self.app = getApp()
@@ -626,26 +669,36 @@ class _event:
         self.on_error = None
         if name is None: self.name = str(func.__name__)
 
-    def error(self, func):
-        self.on_error = func
+        self.description = description
+        if description is None: self.description = '...'
 
-    @property
-    def schema(self):
-        return schema(None, self.func, {}, True, skiparg=0)
+    def error(self):
+        """
+        Function to run when an error occors.
+        """
+        def decorator(func):
+            if not inspect.iscoroutinefunction(func):
+                raise TypeError('command function must be a coroutine function')
+            self.on_error = func
+        return decorator
 
-    def call(self, options:dict, extra:dict={}):
+    async def call(self, options:dict, extra:dict={}):
+        """
+        Trigger this event.
+        """
+        ctx = self.ctx.copy().add_extras(**extra)
+        ctx.logger = logging.getLogger(self.func.__module__)
         try:
-            ctx = self.ctx.copy().add_extras(**extra)
-            return self.func(ctx, **options)
-
+            return await self.func(ctx, **options)
         except Exception as err:
             if self.on_error is not None:
-                self.on_error(self, err)
+                return await self.on_error(ctx, err)
             else:
-                raise err
+                ctx.logger.exception(err)
+                exit(-1)
     
 class _component:
-    def __init__(self, ctx:Context, func, name:str=None):
+    def __init__(self, ctx:Context, func, name:str=None, description:str=None):
         """Internal class"""
         self.ctx = ctx
         self.src = '' # Python file that created this component
@@ -654,23 +707,81 @@ class _component:
         if name is None: self.name = self.ctx.module.namespace+':'+func.__name__
         else: self.name = self.ctx.module.namespace+':'+name
         
-    def error(self, func):
-        self.on_error = func
+        self.description = description
+        if description is None: self.description = '...'
+        
+    def error(self):
+        """
+        Function to run when an error occors.
+        """
+        def decorator(func):
+            if not inspect.iscoroutinefunction(func):
+                raise TypeError('command function must be a coroutine function')
+            self.on_error = func
+        return decorator
 
-    @property
-    def schema(self):
-        return schema(None, self.func, {}, True, skiparg=0)
-
-    def call(self, options:dict, extra:dict={}):
+    async def call(self, options:dict, extra:dict={}):
+        """
+        Trigger this component.
+        """
+        ctx = self.ctx.copy().add_extras(**extra)
+        ctx.logger = logging.getLogger(self.func.__module__)
         try:
-            ctx = self.ctx.copy().add_extras(**extra)
-            return self.func(ctx, **options)
+            return await self.func(ctx, **options)
         except Exception as err:
             if self.on_error is not None:
-                self.on_error(self, err)
+                return await self.on_error(ctx, err)
             else:
-                raise err
+                ctx.logger.exception(err)
+                exit()
     
+class _mimetype:
+    def __init__(self, type:str, subtype:str=None, func=None):
+        self.func = func
+        self.type = type
+        self.subtype = subtype
+        self.on_error = None
+       
+    def __eq__(self, other):
+        if isinstance(other, _mimetype) and self.type == other.type:
+            if self.subtype is not None and other.subtype is not None:
+                if self.subtype == other.subtype: return True
+                else:return False
+            return True
+        return False
+
+    def __str__(self):
+        if self.subtype is None: return f'{self.type}/*'
+        return f'{self.type}/{self.subtype}'
+ 
+    def error(self):
+        """
+        Function to run when an error occors.
+        """
+        def decorator(func):
+            self.on_error = func
+        return decorator
+
+    async def call(self, file:str, node:_node, subtype:str) -> Node:
+        """
+        Trigger this mimetype.
+        """
+        if self.func is not None:
+            ctx = Context(node, None, subtype=subtype).add_extras(file=file)
+            ctx.logger = logging.getLogger(self.func.__module__)
+            try:
+                item = await self.func(ctx)
+                item.on_load(ctx)
+                return item
+            except Exception as err:
+                if self.on_error is not None:
+                    return await self.on_error(ctx, err)
+                else:
+                    ctx.logger.exception(err)
+                    exit(-1)
+        else:
+            raise TypeError(f'{self} mimetype is not callable!')
+
 class AppProxy:
     def __init__(self, layer: dict):
         self.__dict__.update(layer)
@@ -689,7 +800,7 @@ class AppProxy:
         return isinstance(other, AppProxy) and self.__dict__ == other.__dict__
 
 class App:
-    def __init__(self, default_namespace:str='default'):
+    def __init__(self, default_namespace:str='default', ui:bool=False):
         """
         The root app.
 
@@ -697,14 +808,18 @@ class App:
         ---
         `default_namespace` - The default namespace for components. if namespace is "foo" then a component can be defined "foo:bar" or "bar"
 
+        `ui` - When true it will use UI's when needed. For example when ui=False a pack contains a script it will ask via console. When ui=True it will use a Tkinter window.
+
         Methods
         ---
         bind, unbind, call_bind_event, get_node, add_module, remove_module, clear_modules, add_mimetype, remove_mimetype, clear_mimetypes, add_script, remove_script, clear_scripts, add_path, remove_path, clear_paths, reload, unload, load, dump_registries, run
         """
         global __root_app__
         __root_app__ = self
+        self.root_path = None
         self.logger = logger
         self.default_namespace = default_namespace
+        self.ui = ui
         self.packs = {}
         self.alive:bool = False
         self.loading_script = None # script that is currently being loaded
@@ -716,54 +831,87 @@ class App:
         self.items = {} # registry from packs
         self.nodes = {}
         self.events = {}
-        self.packs = {}
+        self.all_packs = {} # All packs
+        self.enabled_packs = {} # All enabled packs
+        self.disabled_packs = {} # All disabled packs
     
+    def __getitem__(self, path:str) -> dict:
+        if re.match(r'^(.*)\.(.*)$', path):
+            module, node_type = path.split('.')
+            if module in self.items and node_type in self.items[module]:
+                items = self.items[module][node_type]
+                return items
+        raise KeyError(path)
+
     def builtins(self):
         """
         Load builtin mimetypes
         
-        Supported: https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types
+        Supported:
         - application/json
         - application/yaml (Needs PyYAML)
         - application/zip
-        - font/* TODO
-        - text/* TODO (css, html, javascript)
-        - video/* TODO
+        - application/tar
         - image/* (Needs Pillow)
+        - audio/* (Needs pygame)
+        - video/* (Needs opencv-python)
         """
-        import zipfile
+        # https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types
         import tarfile
         # xml
         @self.mimetype('application', 'json')
-        def application_json(file, node, subtype) -> Node:
-            valid, data = validate(file, node.schema, 'json')
+        async def application_json(ctx:Context) -> Node: # ctx.file, ctx.node, ctx.subtype
+            valid, data = validate(ctx.file, ctx.node.to_schema(), 'json')
             if valid:
-                n = node.cls.from_dict(data)
-                n.__file__ = file
+                n = ctx.node.cls.from_dict(data)
+                n.__file__ = ctx.file
                 return n
         
         @self.mimetype('application', 'zip')
-        def application_zip(file, node, subtype) -> Node:
-            zip = zipfile.ZipFile(file)
-            n = node.cls.from_dict({'zip': zip})
-            n.__file__ = file
+        async def application_zip(ctx:Context) -> Node:
+            zip = zipfile.ZipFile(ctx.file)
+            n = ctx.node.cls.from_dict({'zip': zip})
+            n.__file__ = ctx.file
             return n
             
         @self.mimetype('application', 'tar')
-        def application_tar(file, node, subtype) -> Node:
-            tar = tarfile.TarFile(file)
-            n = node.cls.from_dict({'tar': tar})
-            n.__file__ = file
+        async def application_tar(ctx:Context) -> Node:
+            tar = tarfile.TarFile(ctx.file)
+            n = ctx.node.cls.from_dict({'tar': tar})
+            n.__file__ = ctx.file
             return n
             
         try:
+            os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide" # hide message
+            import pygame
+            pygame.init()
+
+            @self.mimetype('audio')
+            async def audio(ctx:Context) -> Node:
+                audio = pygame.mixer.Sound(ctx.file)
+                n = ctx.node.cls.from_dict({'audio': audio})
+                n.__file__ = ctx.file
+                return n
+        except ImportError: pass
+
+        try:
+            import cv2
+            @self.mimetype('video')
+            async def video(ctx:Context) -> Node:
+                video = cv2.VideoCapture(ctx.file)
+                n = ctx.node.cls.from_dict({'video': video})
+                n.__file__ = ctx.file
+                return n
+        except ImportError: pass
+
+        try:
             import yaml
             @self.mimetype('application', 'yaml')
-            def application_yaml(file, node, subtype) -> Node:
-                valid, data = validate(file, node.schema, 'yaml')
+            async def application_yaml(ctx:Context) -> Node:
+                valid, data = validate(ctx.file, ctx.node.to_schema(), 'yaml')
                 if valid:
-                    n = node.cls.from_dict(data)
-                    n.__file__ = file
+                    n = ctx.node.cls.from_dict(data)
+                    n.__file__ = ctx.file
                     return n
         except ImportError: pass
         
@@ -771,17 +919,17 @@ class App:
             from PIL import Image
             import imghdr
             @self.mimetype('image')
-            def image(file, node, subtype) -> Node:
-                ext = imghdr.what(file)
-                if ext is not None and (subtype is not None and ext==subtype):
-                    img = Image.open(file)
-                    n = node.cls.from_dict({'image': img})
-                    n.__file__ = file
+            async def image(ctx:Context) -> Node:
+                ext = imghdr.what(ctx.file)
+                if ext is not None and (ctx.subtype is not None and ext==ctx.subtype):
+                    img = Image.open(ctx.file)
+                    n = ctx.node.cls.from_dict({'image': img})
+                    n.__file__ = ctx.file
                     return n
-                else: logging.warning(f"'{file}' Failed to load image! Expected a {str(subtype).upper()} but got a {ext.upper()}")
+                else: logging.warning(f"'{ctx.file}' Failed to load image! Expected a {str(ctx.subtype).upper()} but got a {ext.upper()}")
         except ImportError: pass
 
-    def bind(self, event:str, func):
+    def add_bind(self, event:str, func):
         """
         Run a function when a certain event triggers.
 
@@ -793,13 +941,32 @@ class App:
 
         Events
         ---
-        `BeforeLoad` - Before all packs have been loaded.
+        `on_load` - After all packs have been loaded.
+        
+        `on_unload` - Before all packs have been unloaded.
 
-        `AfterLoad` - After all packs have been loaded.
+        `on_reload` - When all packs are being reloaded.
+
+        `on_import` - After a pack has been imported.
         """
+        if event is None: event  = func.__name__
         try: self.bind_events[str(event)].append(func)
         except KeyError: self.bind_events = {event: [func]}
         return self
+    
+    def bind(self, event:str=None):
+        """
+        Run a function when a certain event triggers.
+
+        Arguments
+        ---
+        `event` - The event type to bind to.
+        """
+        def decorator(func):
+            if not inspect.iscoroutinefunction(func):
+                raise TypeError('command function must be a coroutine function')
+            return self.add_bind(event, func)
+        return decorator
     
     def unbind(self, event:str):
         """
@@ -811,13 +978,19 @@ class App:
         """
         del self.bind_events[str(event)]
 
-    def trigger_bind(self, event:str):
+    def trigger_bind(self, event:str, ctx:Context=None):
         """
         Runs the bind event callbacks.
         """
         funcs = self.bind_events.get(str(event))
+
+        if ctx is None:
+            ctx = Context(None, None)
+            ctx.logger = self.logger
+
         if funcs is not None:
-            for f in funcs: f(self)
+            for f in funcs:
+                asyncio.create_task(f(ctx))
         return self
 
     def get_node(self, name) -> Node:
@@ -834,6 +1007,19 @@ class App:
         for module_type, nodes in self.nodes.items():
             node = nodes.get(name)
             if node is not None: return node
+
+    def get_item(self, path:str, name:str=None) -> dict|Node:
+        """
+        Returns the item or items that this targets.
+        
+        Arguments
+        ---
+        `path` - The module_type.node_type to look in. Example "data.item" will search in module "data" and look for all "item" nodes
+
+        `name` - The name of the node to get.
+        """
+        if name is not None: return self[path].get(name)
+        return self[path]
 
     @property
     def modules(self) -> dict:
@@ -887,7 +1073,7 @@ class App:
     
     @property
     def mimetypes(self) -> list:
-        return [AppProxy(d) for d in getattr(self, '_mimetypes', [])]
+        return [d for d in getattr(self, '_mimetypes', [])]
     
     def add_mimetype(self, func, type:str, subtype:str=None):
         """
@@ -903,12 +1089,13 @@ class App:
 
         `subtype` - The subtype of mimetype. type/subtype
         """
-        mimetype = {'func': func, 'type': type, 'subtype': subtype}
+        # mimetype = {'func': func, 'type': type, 'subtype': subtype} # OLD
+        mimetype = _mimetype(type, subtype, func)
         try:
             self._mimetypes.append(mimetype)
         except AttributeError:
             self._mimetypes = [mimetype]
-        return AppProxy(mimetype)
+        return mimetype
     
     def remove_mimetype(self, index:int):
         """
@@ -945,6 +1132,8 @@ class App:
         `subtype` - The subtype of mimetype. type/subtype
         """
         def decorator(func):
+            if not inspect.iscoroutinefunction(func):
+                raise TypeError('command function must be a coroutine function')
             return self.add_mimetype(func, type, subtype)
         return decorator
 
@@ -1001,7 +1190,13 @@ class App:
     def paths(self) -> list:
         return [AppProxy(d) for d in getattr(self, '_paths', [])]  # type: ignore
     
-    def add_path(self, path, scripts:bool=False):
+    def get_default_path(self) -> AppProxy:
+        for p in self.paths:
+            if p.default == True: return p
+        if len(self.paths) >= 1: return self.paths[0] 
+        return None
+
+    def add_path(self, path, allowed_modules:list[str]=None, default:bool=False, permission_level:int=0):
         """
         Adds a path to the app.
 
@@ -1010,13 +1205,23 @@ class App:
 
         `path` - Folder to load all packs.
 
-        `scripts` - When true all packs in this pack can use scripts.
+        `allowed_modules` - List of allowed modules for this path.
+
+        `default` - If True this is the default path to place imported packs.
+
+        `permission_level` - Permission level of this path.
+
+        0 - No scripts. (default)
+
+        1 - Will ask user for permission to load the script.
+
+        2 - Highest level, can load scripts without asking the user.
         """
         try:
             os.makedirs(path, exist_ok=True)
-            self._paths.append({'path':path, 'scripts': scripts})
+            self._paths.append({'path':path, 'perm': permission_level, 'default': default, 'allowed_modules': allowed_modules})
         except AttributeError:
-            self._paths = [{'path':path, 'scripts': scripts}]
+            self._paths = [{'path':path, 'perm': permission_level, 'default': default, 'allowed_modules': allowed_modules}]
         return self
 
     def remove_path(self, index:int):
@@ -1043,7 +1248,7 @@ class App:
             self._paths = []
         return self
     
-    def reload(self, threaded:bool=True):
+    def reload(self):
         """
         Reload all packs
 
@@ -1051,20 +1256,25 @@ class App:
         ---
         `threaded` - When true it will reload all packs in a new thread.
         """
-        logger.info('Reloading!')
         self.unload()
-        if threaded: threading.Thread(target=self.load, args=(), daemon=True).start()
-        else: self.load()
+        self.trigger_bind('on_reload')
+        logger.info('Reloading!')
+        asyncio.run(self.load())
 
     def unload(self):
         """
         Unloads all packs.
         """
         # Unload all nodes
+        self.trigger_bind('on_unload')
         for module_name, modules in self.items.items():
             for node_name, nodes in modules.items():
                 for name, node in nodes.items():
-                    node.on_unload(Context(node, None))
+                    ctx = Context(node, None)
+                    try:
+                        node.on_unload(ctx)
+                    except Exception as err:
+                        ctx.logger.exception(err)
             
         self.cache.clear('images') # Clear cached images
         self.clear_mimetypes()
@@ -1072,19 +1282,22 @@ class App:
         self.events = {}
         self.nodes = {}
         self.items = {}
+        self.all_packs = {}
+        self.enabled_packs = {}
+        self.disabled_packs = {}
 
         for name, script in self.scripts.items(): script.on_disable()
         self.clear_scripts()
 
-    def load(self):
+    async def load(self):
         """
         Load all packs from the configured paths.
         
         WARNING: If you need to reload all packs use App.reload instead!
         """
         self.builtins()
-        self.trigger_bind('BeforeLoad')
         start = time.time()
+
         # Validate packs
         for p in self.paths:
             for name in os.listdir(p.path):
@@ -1094,25 +1307,47 @@ class App:
                     valid, data = validate(manifest_path, Manifest.schema())
                     if valid:
                         manifest = Manifest.from_dict(data)
-                        manifest.__file__ = manifest_path
-                        manifest.enable_scripts(p.scripts)
+                        manifest.__file__:str = manifest_path
+                        manifest.__path__:AppProxy = p
+                        manifest.set_permission_level(p.perm)
                         manifest.set_path(path=path)
-                        icon = os.path.join(path, 'pack_icon.png')
+                        # icon = os.path.join(path, 'pack_icon.png')
                         # if os.path.isfile(icon):
                         #     manifest.set_icon(fp=icon)
                         # manifest.set_icon()
-                        self.packs[str(manifest.uuid)] = manifest
+
+                        # Check if pack is in list
+                        register = True
+                        for pack in self.list_packs():
+                            if pack['Name'] == manifest.uuid: register = False
+                        if register:
+                            self.register_pack(uuid=manifest.uuid, version=manifest.version)
+                        self.all_packs[str(manifest.uuid)] = manifest
          
         # TODO algrithm to re-order path list for depcies
         # pack1 requires pack2. so it should order them [pack2, pack1] that way pack2 loads first, then pack1
-        
+        self.all_packs = sortPacks(self.all_packs)
+
+        # Assign enabled and disabled packs
+        for uuid, p in self.all_packs.items():
+            with open(os.path.join(self.root_path, 'packs.json'), 'r') as r:
+                _packs = json.load(r)['Packs']
+                enabled_packs = _packs.get('Enabled', [])
+                for i in enabled_packs:
+                    if i['Name'] == uuid:
+                        self.enabled_packs[str(uuid)] = p
+
+                disabled_packs = _packs.get('Disabled', [])
+                for j in disabled_packs:
+                    if j['Name'] == uuid:
+                        self.disabled_packs[str(uuid)] = p
+
         # Check dependencies
-        for uuid, manifest in self.packs.items():
+        for uuid, manifest in self.enabled_packs.items():
             for dep in manifest.dependencies:
-                res = self.packs.get(dep.uuid)
+                res = self.enabled_packs.get(dep.uuid)
                 if res is None:
                     logger.warning(f"'{manifest.path}' Missing dependency with ID '{dep.uuid}' and version {dep.version}")
-                
                 else:
                     if dep.version is not None:
                         if manifest.version != dep.version:
@@ -1123,21 +1358,35 @@ class App:
                             logger.warning(f"'{manifest.path}' Missing dependency with ID '{dep.uuid}' and version {dep.min_version}")
 
         # Load scripts
-        for uuid, manifest in self.packs.items():
+        askokscript = None
+        for uuid, manifest in self.enabled_packs.items():
             for module in manifest.modules:
                 if module.type == 'script': # Built-in module type 'script'
-                    if manifest.scripts:
-                        script_fp = manifest.join(module.path)
-                        script = self.add_script(module.uuid[0:8], script_fp)
-                        script.load()
-                    else:
-                        logger.warning(f"'{manifest.path}' Could not load module as scripts are disabled!")
+                    if manifest.permission_level >= 1:
+                        if manifest.permission_level >= 2:
+                            script_fp = manifest.join(module.path)
+                            script = self.add_script(module.uuid[0:8], script_fp)
+                            script.load()
+                        else:
+                            # TODO if app has UI this should use a seperate method for UI implemntation.
+                            if askokscript == None:
+                                askokscript = self.askyesno('Do you want to allow this pack to make changes to your PC? Only load packs from authors you trust.') 
+
+                            if askokscript:
+                                script_fp = manifest.join(module.path)
+                                script = self.add_script(module.uuid[0:8], script_fp)
+                                script.load()
 
         self.loading_script = None
         # Load modules and nodes
-        for uuid, manifest in self.packs.items():
+        for uuid, manifest in self.enabled_packs.items():
             for module in manifest.modules:
                 if module.type != 'script':
+                    # Block modules 
+                    if manifest.__path__.allowed_modules is not None and module.type not in manifest.__path__.allowed_modules:
+                        logger.warning(f"'{module.type}' module is not allowed in '{manifest.path}'")
+                        continue
+
                     regs = self.nodes.get(module.type)
                     if regs is not None:
                         for name, node in regs.items(): # Search for nodes
@@ -1147,10 +1396,10 @@ class App:
                                     types = node._mimetype.split('/')
                                     subtype = None
                                     if len(types) == 2: subtype = types[1]
-                                    reg = node.mimetype(file, node, subtype)
+                                    # reg = node.mimetype(file, node, subtype)
+                                    reg = await node.mimetype.call(file=file, node=node, subtype=subtype)
                                     if reg is not None:
                                         reg._app = self
-                                        reg.on_load(Context(reg, None))
                                         name = node.resourcepath_command(node, file, manifest)
                                         try:
                                             self.items[module.type][node.name][name] = reg
@@ -1163,7 +1412,20 @@ class App:
 
         tme = round(time.time() - start, 2)
         logger.info(f'Done! ({tme} ms)')
-        self.trigger_bind('AfterLoad')
+        self.trigger_bind('on_load')
+
+    def askyesno(self, prompt:str) -> bool:
+        """
+        Ask a question; return true if the answer is yes
+        """
+        if self.ui:
+            from tkinter import messagebox
+            res = messagebox.askyesno('App', prompt)
+            return res
+        else:
+            res = input(str(prompt)+' (Y/n) ')
+            if res.strip().lower() == 'y': return True
+        return False
 
     def dump_registries(self, path:str=''):
         """
@@ -1189,23 +1451,161 @@ class App:
         else:
             raise RuntimeError('App must be running before you can run this method!')
 
-    def run(self, threaded:bool=False, logger:bool=True):
+    def register_pack(self, uuid:str, version:list[int, int, int]):
+        """
+        Add this pack to the packs.json
+        
+        Arguments
+        ---
+        `uuid` - UUID of the pack to registesr.
+
+        `version` - Version of the pack to register.
+        """
+        pack = os.path.join(self.root_path, 'packs.json')
+        with open(pack, 'r') as r:
+            packs = json.load(r)
+            packs['Packs']['Enabled'].append({'Name': str(uuid), 'Version': str(version)})
+
+        with open(pack, 'w') as w:
+            w.write(json.dumps(packs))
+
+    def list_packs(self):
+        """
+        Returns a list of all packs
+        """
+        packs = []
+        with open(os.path.join(self.root_path, 'packs.json'), 'r') as r:
+            res = json.load(r)
+            for e in res['Packs']['Enabled']: packs.append(e)
+            for d in res['Packs']['Disabled']: packs.append(d)
+        return packs
+
+    def enable_pack(self, uuid:str):
+        """
+        Enables this pack. Run .reload() to apply the changes.
+
+        Arguments
+        ---
+        `uuid` - UUID of the pack to enable.
+        """
+        pack = os.path.join(self.root_path, 'packs.json')
+        with open(pack, 'r') as r:
+            packs = json.load(r)
+            disabled = packs['Packs']['Disabled']
+            i=0
+            for p in disabled:
+                if p['Name'] == uuid:
+                    packs['Packs']['Enabled'].append(p)
+                    del packs['Packs']['Disabled'][i]
+                    continue
+                i+=1
+
+        with open(pack, 'w') as w:
+            w.write(json.dumps(packs))
+
+    def disable_pack(self, uuid:str):
+        """
+        Disabled this pack. Run .reload() to apply the changes.
+
+        Arguments
+        ---
+        `uuid` - UUID of the pack to enable.
+        """
+        pack = os.path.join(self.root_path, 'packs.json')
+        with open(pack, 'r') as r:
+            packs = json.load(r)
+            enabled = packs['Packs']['Enabled']
+            i=0
+            for p in enabled:
+                if p['Name'] == uuid:
+                    packs['Packs']['Disabled'].append(p)
+                    del packs['Packs']['Enabled'][i]
+                    continue
+                i+=1
+
+        with open(pack, 'w') as w:
+            w.write(json.dumps(packs))
+
+    def lock_pack(self, uuid:str, state:str='enable'):
+        """
+        Locks this pack in enable/disable state.
+
+        Arguments
+        ---
+        `uuid` - UUID of the pack to lock.
+
+        `state` - When set to 'enabled' this pack will always be enabled can cannot be changed. When set to 'disabled' this pack will always be disabled and cannot be changed.
+        """
+        if state=='enabled': self.enable_pack(uuid)
+        elif state=='disabled': self.disable_pack(uuid)
+
+    def unlock_pack(self, uuid:str):
+        """
+        Unlocks this pack.
+
+        Arguments
+        ---
+        `uuid` - UUID of the pack to unlock.
+        """
+        self.enable_pack(uuid)
+
+    async def import_pack(self, fp:str) -> bool:
+        """
+        Copies this pack to the default pack folder. Run .reload() to apply the changes.
+
+        Arguments
+        ---
+        `fp` - File path to the ZIP file to import.
+
+        `threaded` - Import this file in a new thread.
+        """
+        dpath = self.get_default_path()
+        if dpath is not None:
+            path = os.path.join(dpath.path, uuid.uuid4().hex)
+            os.makedirs(path, exist_ok=True)
+            if os.path.isfile(fp):
+                with zipfile.ZipFile(fp) as zip:
+                    try:
+                        valid, data = validates(zip.read('manifest.json'), Manifest.schema(), filename=os.path.join(fp, 'manifest.json'))
+                        if valid:
+                            packs = self.list_packs()
+                            shouldImport = True
+                            for pack in packs:
+                                if pack['Name'] is data['uuid']:
+                                    shouldImport = False
+                            if shouldImport:
+                                zip.extractall(path)
+                                await self.trigger_bind('on_import', Context(None, None, path=path))
+                                return True
+                            else:
+                                return False
+                    except KeyError: pass
+        else:
+            raise AppError('Paths have not been set!')            
+        return False
+
+    def run(self, path:str, logger:bool=True):
         """
         Runs the app.
         
         Arguments
         ---
-        `threaded` - When true it will load all packs on a thread. (Mainly used for tkinter apps which would otherwise freeze).
+        `path` - The root script path.
 
         `multithreaded` - When true it will load all packs using multiple threads for faster loading times.
 
         `logger` - When false it will disable the built-in logger.
         """
+        self.root_path = path
+        packs = os.path.join(self.root_path, 'packs.json')
+        if os.path.exists(packs) == False:
+            with open(packs, 'w') as w:
+                w.write(json.dumps({'Packs': {'Disabled': [], 'Enabled': []}}))
+
         if self.alive is False:
             if logger is False: logger.disabled = True
-            if threaded: threading.Thread(target=self.load, args=(), daemon=True).start()
-            else: self.load()
             self.alive = True
+            asyncio.run(self.load())
 
 class ModuleProxy:
     def __init__(self, layer: dict):
@@ -1253,7 +1653,7 @@ class Module:
     def nodes(self) -> list:
         return [str(d) for d in getattr(self, '_nodes', [])]  # type: ignore
 
-    def add_node(self, cls:Node, *, pathname:str, mimetype:str=None, resourcepath_command=None):
+    def add_node(self, cls:Node, *, rule:str, mimetype:str=None, resourcepath_command=None, description:str=None):
         """
         Creates a node from a regular class.
 
@@ -1266,8 +1666,10 @@ class Module:
         `mimetype` - The mimetype to except for this node.
 
         `resourcepath_command` - The command to generate the resrouce path.
+
+        `description` - Description of the node.
         """
-        node = _node(self, pathname, cls, mimetype, resourcepath_command)
+        node = _node(self, rule, cls, mimetype, resourcepath_command)
         node.src = self.src
         try:
             if node.name not in self.app.nodes[self.module_type]:
@@ -1303,7 +1705,7 @@ class Module:
             self._nodes = []
         return self
 
-    def node(self, pathname:str, mimetype:str=None, resourcepath_command=None):
+    def node(self, rule:str, mimetype:str=None, resourcepath_command=None, description:str=None):
         """
         Creates a node from a regular class.
 
@@ -1316,14 +1718,14 @@ class Module:
         `resourcepath_command` - The command to generate the resrouce path.
         """
         def decorator(cls):
-            return self.add_node(cls, pathname=pathname, mimetype=mimetype, resourcepath_command=resourcepath_command)
+            return self.add_node(cls, rule=rule, mimetype=mimetype, resourcepath_command=resourcepath_command, description=description)
         return decorator
     
     @property
     def events(self) -> list:
         return [str(d) for d in getattr(self, '_events', [])]  # type: ignore
     
-    def add_event(self, func, name:str=None):
+    def add_event(self, func, name:str=None, description:str=None):
         """
         Creates an event from a regular function.
 
@@ -1334,7 +1736,7 @@ class Module:
         `name` - Name of this event.
         """
         ctx = Context(None, self)
-        event = _event(ctx, func, name)
+        event = _event(ctx, func, name, description)
         event.src = self.src
         if event.name not in self.app.events:
             self.app.events[event.name] = event
@@ -1366,7 +1768,7 @@ class Module:
             self._events = {}
         return self
 
-    def event(self, name:str=None):
+    def event(self, name:str=None, description:str=None):
         """
         Creates an event from a regular function.
 
@@ -1375,7 +1777,9 @@ class Module:
         `name` - Name of this event.
         """
         def decorator(func):
-            return self.add_event(func, name)
+            if not inspect.iscoroutinefunction(func):
+                raise TypeError('command function must be a coroutine function')
+            return self.add_event(func, name, description)
         return decorator
     
 class Version:
@@ -1423,9 +1827,55 @@ class Version:
     def __gt__(self, other):
         return isinstance(other, Version) and (self.major, self.minor, self.patch) > (other.major, other.minor, other.patch)
 
-def validate(fp:str, schema:dict, type:str='json') -> tuple[bool, dict]:
+def validates(s:str, schema:dict, type:str='json', filename:str='none.json') -> tuple[bool, dict]:
     """
     Tests if instances passes the schema.
+
+    Arguments
+    ---
+    `fp` - string to JSON or YAML.
+
+    `schema` - The JSON schema to validate with.
+
+    `type` - The type of validation. json, yaml
+
+    `filename` - Name of the file for errors.
+
+    Returns
+    `tuple` - Returns a 2 length tuple. The first value is whether it passed the test. The second is the parsed isntance.
+    """
+    try:
+        match type.lower():
+            case 'json':  instance = json.loads(s)
+            case 'yaml': 
+                import yaml
+                instance = yaml.safe_load(s)
+            case _:
+                raise KeyError(f"'{type}' is not a supported validation type. Must be json or yaml")
+        jsonschema.validate(instance, schema)
+        return (True, instance)
+    except json.JSONDecodeError as err:
+        logger.warning(f"'{filename}' DecodeError: {err}")
+    except jsonschema.ValidationError as err:
+        pos = ''
+        index=0
+        for p in err.absolute_path:
+            if isinstance(p, int): pos+=f'[{p}]'
+            else:
+                if index!=0: pos+='.'
+                pos+=str(p)
+            index+=1
+        att = f" at '{pos}'"
+        if pos=='': att = ''
+        logger.warning(f"'{filename}' ValidationError: {err.message}"+att)
+    except Exception as err:
+        logger.warning(f"'{filename}' {err}: {err}")
+    
+    return False, None
+
+def validate(fp:str, schema:dict, type:str='json') -> tuple[bool, dict]:
+    """
+    Tests if instances passes the schema. `.read()`
 
     Arguments
     ---
@@ -1440,34 +1890,7 @@ def validate(fp:str, schema:dict, type:str='json') -> tuple[bool, dict]:
     """
     if os.path.isfile(fp):
         with open(fp, 'r') as r:
-            try:
-                match type.lower():
-                    case 'json':  instance = json.load(r)
-                    case 'yaml': 
-                        import yaml
-                        instance = yaml.safe_load(r)
-                    case _:
-                        raise KeyError(f"'{type}' is not a supported validation type. Must be json or yaml")
-                jsonschema.validate(instance, schema)
-                return (True, instance)
-            except json.JSONDecodeError as err:
-                logger.warning(f"'{fp}' DecodeError: {err}")
-
-            except jsonschema.ValidationError as err:
-                pos = ''
-                index=0
-                for p in err.absolute_path:
-                    if isinstance(p, int): pos+=f'[{p}]'
-                    else:
-                        if index!=0: pos+='.'
-                        pos+=str(p)
-                    index+=1
-                att = f" at '{pos}'"
-                if pos=='': att = ''
-                logger.warning(f"'{fp}' ValidationError: {err.message}"+att)
-
-            except Exception as err:
-                logger.warning(f"'{fp}' {err}: {err}")
+            return validates(r.read(), schema, type, fp)
 
     return (False, None)
 
@@ -1477,20 +1900,8 @@ def mimetype(type:str, subtype:str=None):
         return getApp().add_mimetype(func, type, subtype)
     return decorator
 
-def to_json_type(v):
-    if v == dict: return 'object'
-    elif v == list: return 'array'
-    elif v == str: return 'string'
-    elif v == int: return 'integer'
-    elif v == float: return 'number'
-    elif v == bool: return 'boolean'
-    elif v == inspect._empty: return None
-    elif isinstance(v, ResourcePath):
-        return 'string'
-    logger.info(f"Could not convert annotation type to JSON '{v}'")
-    return None
-
-def schema(node, cls_or_func, traits:list, child:bool=False, skiparg:int=-1) -> dict:
+# Replace to_json_type, to_schema, and schema with schemiser
+def to_schema(cls_or_func, node=None, traits:list=[], root:dict=None, skiparg:int=-1) -> dict:
     """
     Creates a jsonschema from a class or function.
 
@@ -1506,58 +1917,25 @@ def schema(node, cls_or_func, traits:list, child:bool=False, skiparg:int=-1) -> 
 
     `skiparg` - Argument index to skip. (used to skip the first CONTEXT arg for nodes and events).
     """
-    app = getApp()
-    result = {
-        '$schema': 'http://json-schema.org/draft-07/schema',
-        'type': 'object',
-        'required': [],
-        'properties': {},
-        'patternProperties': {
-            '^\\$': True
-        },
-        'additionalProperties': False
-    }
-    if child:
-        result = {
+    result = schemaser.to_schema(cls_or_func, root=root, skiparg=skiparg)
+
+    # Inject Components
+    if 'components' in traits:
+        prop = result['properties']['components']
+        if isinstance(node, _node) and prop['type'] == 'object':
+            for k,v in node.__components__.items():
+                prop['properties'][str(k)] = schemaser.to_schema(v.func, result, skiparg=0)
+
+    # Inject Events
+    if 'events' in traits:
+        app = getApp()
+        prop = result['properties']['events']
+        prop['additionalProperties'] = {
             'type': 'object',
-            'required': [],
             'properties': {},
             'additionalProperties': False
         }
-    para = inspect.signature(cls_or_func).parameters
-    i = 0
-    for k, v in para.items():
-        if i != skiparg:
-            result['properties'][k] = {}
-            prop = result['properties'][k]
-
-            if v.default == inspect._empty: result['required'].append(k)
-
-            type = to_json_type(v.annotation)
-            if type is not None:
-                prop['type'] = type
-                match type:
-                    case 'object':
-                        prop['properties'] = {}
-                        prop['additionalProperties'] = False
-                    case 'array':
-                        prop['items'] = {}
-                    
-
-            if 'components' in traits and k=='components':
-                if isinstance(node, _node) and prop['type'] == 'object':
-                    for k,v in node.__components__.items():
-                        prop['properties'][str(k)] = v.schema
-
-            if 'events' in traits and k=='events':
-                prop['additionalProperties'] = {
-                    'type': 'object',
-                    'properties': {},
-                    'additionalProperties': False
-                }
-                for k,v in app.events.items():
-                    prop['additionalProperties']['properties'][str(k)] = v.schema
+        for k,v in app.events.items():
+            prop['additionalProperties']['properties'][str(k)] = schemaser.to_schema(v.func, result, skiparg=0)
             
-        i+=1
-    # Get all args
     return result

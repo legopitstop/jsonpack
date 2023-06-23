@@ -29,7 +29,7 @@ def display_name(ctx:Context, text:str):
 @Item.component()
 def on_click(ctx:Context, event:str):
     ctx.label.bind('<Button-1>', lambda tk, i=ctx.item, e=event: i.trigger_event(e))
-    
+
 @Item.component()
 def icon(ctx:Context, texture:Texture.ref): # str should use Texture which will run Texture.validate to make sure the texture exists.
     photo = ctx.app.items['resources']['texture'].get(texture)
@@ -50,7 +50,7 @@ class Zipper(Node):
 # EVENTS
 
 @data.event('print')
-def _print(ctx:Context, text:str):
+def print_event(ctx:Context, text:str):
     logging.info(text)
 
 # NODES

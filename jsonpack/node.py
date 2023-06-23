@@ -1,4 +1,5 @@
 import jsonpack
+import asyncio
 
 class NodeProxy:
     def __init__(self, layer: dict):
@@ -25,7 +26,7 @@ class Node(object):
     ---
     to_dict, from_dict, on_load, on_unload, __str__
     """
-    traits = {}
+    traits = []
     __slots__ = []
     __file__ = None
 
@@ -116,7 +117,7 @@ class Componentable(object):
         res = self._components.get(name)
         if res is not None: return NodeProxy(res)
 
-    def trigger_component(self, name:str, **extra):
+    async def trigger_component(self, name:str, **extra):
         """
         Returns the result of the component function when called.
 
@@ -130,7 +131,7 @@ class Componentable(object):
         com = node.__components__.get(name)
         kw = self._components.get(name)
         if com is not None and kw is not None:
-            return com.call(kw, extra)
+            return await com.call(kw, extra)
             
 class Eventable(object):
     """
@@ -218,12 +219,12 @@ class Eventable(object):
         ---
         `name` - Name of the event to run.
         """
-        res = self.event(name)
+        res = self.get_event(name)
         if res is not None:
             for k, v in res.__dict__.items():
                 event:jsonpack._event = self._app.events.get(k)
                 if event is not None:
-                    event.call(v)
+                    asyncio.run(event.call(v))
         else:
             jsonpack.logger.warning(f"'{self.__file__}': Event '{name}' does not exist!")
         return self

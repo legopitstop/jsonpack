@@ -1,6 +1,56 @@
 import logging
 import jsonpack
 
+def topological_sort(nodes: dict[str, list[str]]) -> list[str]:
+    # Calculate the indegree for each node
+    indegrees = {k: 0 for k in nodes.keys()}
+    for name, dependencies in nodes.items():
+        for dependency in dependencies:
+            indegrees[dependency] += 1
+
+    # Place all elements with indegree 0 in queue
+    queue = [k for k in nodes.keys() if indegrees[k] == 0]
+
+    final_order = []
+
+    # Continue until all nodes have been dealt with
+    while len(queue) > 0:
+
+        # node of current iteration is the first one from the queue
+        curr = queue.pop(0)
+        final_order.insert(0,curr) # add dep at START instead of END.
+
+        # remove the current node from other dependencies
+        for dependency in nodes[curr]:
+            indegrees[dependency] -= 1
+
+            if indegrees[dependency] == 0:
+                queue.append(dependency)
+
+    # check for circular dependencies
+    if len(final_order) != len(nodes):
+        jsonpack.logger.error('Circular dependency found.')
+        jsonpack.exit()
+    return final_order
+
+def sortPacks(packs:dict):
+    """Sort packs depending on their dpendency"""
+
+    # format
+    _packs = {}
+    for uuid, p in packs.items():
+        _packs[p.uuid] = []
+        for dep in p.dependencies:
+            _packs[p.uuid].append(dep.uuid)
+
+    # sort
+    sorted = topological_sort(_packs)
+
+    # unformat
+    sorted_packs = {}
+    for uuid in sorted: sorted_packs[uuid] = packs[uuid]
+    return sorted_packs
+
 class Cache:
     def __init__(self):
         """
@@ -59,7 +109,7 @@ class Cache:
         except IndexError:
             return default
         
-class ResourcePath(object):
+class ResourcePath:
     def __init__(self, module_type:str, node_name:str):
         """
         Describes a resrouce path used for annotations.
@@ -76,6 +126,9 @@ class ResourcePath(object):
         """
         self.module_type = module_type
         self.node_name = node_name
+
+    # def __annotation__(self):
+    #     return str
 
     # TODO
     def exists(self) -> bool:
@@ -99,7 +152,7 @@ class Context:
         ---
         add_extras, copy, from_dict, to_dict
         """
-        self.logger = logging.getLogger('App')
+        self.logger = logging.getLogger('Unknown') # Fallback logger
         self.node = node
         self.module = module
         self.app = jsonpack.getApp()
