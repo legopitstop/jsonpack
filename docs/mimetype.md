@@ -5,7 +5,7 @@ Adds a mimetype to the app.
 ## Example Code
 ```py
 @jsonpack.mimetype(type, subtype=None)
-def mimetype_function(file, node, subtype):
+async def mimetype_function(file, node, subtype):
     return node.cls.from_dict(data)
 ```
 

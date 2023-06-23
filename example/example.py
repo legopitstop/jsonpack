@@ -17,9 +17,11 @@ class App(CTk):
         self.logger = logging.getLogger('App')
 
         # Widgets
-        self.reg = jsonpack.App('default')
-        self.reg.add_path(os.path.join(PATH, 'packs'), scripts=True) # Path to look for packs
-        self.reg.bind('AfterLoad', lambda e: self.load())
+        self.reg = jsonpack.App('default', ui=True)
+        self.reg.add_path(os.path.join(PATH, 'packs'), permission_level=1) # Path to look for packs
+        
+        @self.reg.bind()
+        async def on_load(e): await self.load()
 
         self.btn = CTkButton(self, text='Exit', command=self.destroy)
         self.btn.grid(row=0, column=0, sticky='w')
@@ -33,15 +35,15 @@ class App(CTk):
         self.grid_rowconfigure(1,weight=1)
         self.grid_columnconfigure(0,weight=1)
 
-    def load(self):
+    async def load(self):
         row = 0
         column = 0
         for name, item in self.reg['data.item'].items():
-            icon = item.trigger_component('default:icon')
+            icon = await item.trigger_component('default:icon')
             if icon is not None:
                 lbl = Label(self.lst, image=icon, compound='left', bg=self.lst['bg'])
-                item.trigger_component('default:on_click', label=lbl, item=item)
-                item.trigger_component('default:on_hover', label=lbl, item=item)
+                await item.trigger_component('default:on_click', label=lbl, item=item)
+                await item.trigger_component('default:on_hover', label=lbl, item=item)
                 lbl.grid(row=row, column=column) 
                 if column >= 6:
                     column = 0
@@ -54,7 +56,7 @@ class App(CTk):
         self.reg.reload(threaded=True)
 
     def mainloop(self):
-        self.reg.run()
+        self.reg.run(path=PATH)
         super().mainloop()
 
 if __name__ == '__main__':

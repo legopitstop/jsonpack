@@ -63,12 +63,12 @@ class Item(jsonpack.Node, jsonpack.Componentable, jsonpack.Eventable):
 
 # Define a component for the node.
 @Item.component('on_load')
-def on_load(ctx:Context, event:str):
+async def on_load(ctx:Context, event:str):
     ctx.item.trigger_event(event) # Runs the event
 
 # Define an event
 @module.event('print')
-def _print(ctx:Context, text:str):
+async def _print(ctx:Context, text:str):
     print(text)
     
 ```

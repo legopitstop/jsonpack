@@ -38,7 +38,7 @@ class Item(jsonpack.Node, jsonpack.Componentable):
     traits = ['components']
 
 @Item.component()
-def on_click(ctx:jsonpack.Context):
+async def on_click(ctx:jsonpack.Context):
     pass
 ```
 

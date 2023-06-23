@@ -4,7 +4,7 @@ Creates a jsonschema from a class or function.
 
 ## Example Code
 ```py
-jsonpack.schema(node, cls_or_func, traits, child=False, skiparg=-1)
+jsonpack.to_schema(node, cls_or_func, traits, child=False, skiparg=-1)
 ```
 
 ## Arguments

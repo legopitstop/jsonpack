@@ -23,15 +23,15 @@ class Item(Node, Componentable, Eventable):
         self.events = events
 
 @Item.component()
-def display_name(ctx:Context, text:str):
+async def display_name(ctx:Context, text:str):
     return text
 
 @Item.component()
-def on_click(ctx:Context, event:str):
+async def on_click(ctx:Context, event:str):
     ctx.label.bind('<Button-1>', lambda tk, i=ctx.item, e=event: i.trigger_event(e))
 
 @Item.component()
-def icon(ctx:Context, texture:Texture.ref): # str should use Texture which will run Texture.validate to make sure the texture exists.
+async def icon(ctx:Context, texture:Texture.ref): # str should use Texture which will run Texture.validate to make sure the texture exists.
     photo = ctx.app.items['resources']['texture'].get(texture)
     if photo is not None:
         img = ImageTk.PhotoImage(photo.image.resize((64, 64), Image.NEAREST))
@@ -50,7 +50,7 @@ class Zipper(Node):
 # EVENTS
 
 @data.event('print')
-def print_event(ctx:Context, text:str):
+async def print_event(ctx:Context, text:str):
     logging.info(text)
 
 # NODES

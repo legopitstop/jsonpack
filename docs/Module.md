@@ -4,15 +4,15 @@ Defines a modules nodes when defined in the packs manifest.json.
 
 ## Example Code
 ```py
-module = jsonpack.Module(namespace, module_type)
+module = jsonpack.Module(module_type, namespace)
 ```
 
 ## Arguments
 
 | Argument | Description |
 |--|--|
-|namespace|The namespace used for components. `<namespace>:<component_name>`|
 |module_type|The type of module this is. example; "data" for server side modules, "resources" is for client side modules.|
+|namespace|The namespace used for components. `<namespace>:<component_name>`|
 
 ## Methods
 

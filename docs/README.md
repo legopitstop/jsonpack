@@ -18,6 +18,6 @@
 - Methods
     - [validate](./validate)
     - [mimetype](./mimetype)
-    - [schema](./schema)
+    - [to_schema](./to_schema)
 - Pack
     - [manifest.json](./manifest_json)

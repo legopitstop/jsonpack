@@ -11,7 +11,7 @@ PATH = os.path.dirname(os.path.realpath(__file__))
 app = jsonpack.App('app')
 
 # Add folders that it should check for packs.
-app.add_path(os.path.join(PATH, 'packs'), scripts=True)
+app.add_path(os.path.join(PATH, 'packs'), permission_level=2)
 
 # Load all packs
 app.run()

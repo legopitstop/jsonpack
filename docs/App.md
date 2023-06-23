@@ -12,10 +12,12 @@ app = jsonpack.App(default_namespace='default')
 | Argument | Description |
 |--|--|
 |default_namespace|The default namespace for components. if default namespace is "foo" then a component can be defined "foo:bar" or "bar"|
+|ui|When true it will use UI's when needed. For example when ui=False a pack contains a script it will ask via console. When ui=True it will use a Tkinter window.|
 
 ## Methods
 
-- .bind(event, func)<br>Run a function when a certain event triggers.
+- .add_bind(event, func)<br>Run a function when a certain event triggers.
+- .bind(event)<br>Run a function when a certain event triggers.
 - .unbind(event)<br>Removes a bind event.
 - .call_bind_event(event)<br>Runs the bind event callbacks.
 - .get_node(name)<br>Returns with the Node.
